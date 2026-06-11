@@ -86,9 +86,13 @@ def main() -> None:
             patient_id=args.patient_id,
             slice_index=args.slice_index,
         )
-    except Exception as exc:
+    except RuntimeError as exc:
         print("\nNao foi possivel exportar a imagem agora.")
-        print("Isso e esperado enquanto os DICOMs ainda nao estiverem em src/data/LIDC-IDRI.")
+        print("Confira se os DICOMs estao em src/data/LIDC-IDRI e se a config do pylidc foi criada.")
+        print(f"Detalhe: {exc}")
+        return
+    except Exception as exc:
+        print("\nNao foi possivel exportar a imagem por um erro inesperado.")
         print(f"Detalhe: {exc}")
         return
 

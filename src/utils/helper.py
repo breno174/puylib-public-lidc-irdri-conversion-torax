@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import warnings
+import configparser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -108,8 +109,14 @@ def write_home_pylidc_config(settings: PylidcSettings | None = None) -> Path:
     return settings.config_file
 
 
+def patch_pylidc_runtime_compatibility() -> None:
+    if not hasattr(configparser, "SafeConfigParser"):
+        configparser.SafeConfigParser = configparser.ConfigParser  # type: ignore[attr-defined]
+
+
 def require_pylidc() -> Any:
     try:
+        patch_pylidc_runtime_compatibility()
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
@@ -144,6 +151,7 @@ def export_middle_slice(patient_id: str | None = None, slice_index: int | None =
 
     settings = get_settings()
     ensure_data_folders(settings)
+    patch_pylidc_runtime_compatibility()
 
     pl = require_pylidc()
     query = pl.query(pl.Scan)
