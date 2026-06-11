@@ -113,6 +113,14 @@ def patch_pylidc_runtime_compatibility() -> None:
     if not hasattr(configparser, "SafeConfigParser"):
         configparser.SafeConfigParser = configparser.ConfigParser  # type: ignore[attr-defined]
 
+    try:
+        import numpy as np
+    except ModuleNotFoundError:
+        return
+
+    if not hasattr(np, "int"):
+        np.int = int  # type: ignore[attr-defined]
+
 
 def require_pylidc() -> Any:
     try:
