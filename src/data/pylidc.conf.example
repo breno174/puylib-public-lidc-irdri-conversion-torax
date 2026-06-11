@@ -1,0 +1,3 @@
+[dicom]
+path = C:\Users\breno\desenvolvimento\mestrado\article\src\data\LIDC-IDRI
+warn = True

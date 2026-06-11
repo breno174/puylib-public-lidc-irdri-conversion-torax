@@ -1,0 +1,3 @@
+pylidc
+matplotlib
+setuptools<81
