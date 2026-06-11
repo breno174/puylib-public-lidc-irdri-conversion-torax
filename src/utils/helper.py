@@ -120,6 +120,8 @@ def patch_pylidc_runtime_compatibility() -> None:
 
     if not hasattr(np, "int"):
         np.int = int  # type: ignore[attr-defined]
+    if not hasattr(np, "float"):
+        np.float = float  # type: ignore[attr-defined]
 
 
 def require_pylidc() -> Any:
@@ -187,3 +189,257 @@ def export_middle_slice(patient_id: str | None = None, slice_index: int | None =
     plt.close(fig)
 
     return output_path
+
+
+def normalize_ct_image(
+    image: Any,
+    window_center: float | None = -600.0,
+    window_width: float | None = 1500.0,
+) -> Any:
+    import numpy as np
+
+    image = image.astype(np.float32)
+
+    if window_center is not None and window_width is not None:
+        lower = window_center - window_width / 2.0
+        upper = window_center + window_width / 2.0
+        image = np.clip(image, lower, upper)
+    else:
+        lower = float(np.min(image))
+        upper = float(np.max(image))
+
+    if upper <= lower:
+        return np.zeros(image.shape, dtype=np.uint8)
+
+    image = (image - lower) / (upper - lower)
+    return (image * 255.0).clip(0, 255).astype(np.uint8)
+
+
+def save_raw_grayscale_image(
+    image: Any,
+    output_path: Path,
+    window_center: float | None = -600.0,
+    window_width: float | None = 1500.0,
+    color_mode: str = "grayscale",
+) -> None:
+    from PIL import Image
+
+    if color_mode not in {"grayscale", "rgb"}:
+        raise ValueError("color_mode deve ser grayscale ou rgb.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    image_8bit = normalize_ct_image(
+        image,
+        window_center=window_center,
+        window_width=window_width,
+    )
+    pil_image = Image.fromarray(image_8bit, mode="L")
+    if color_mode == "rgb":
+        pil_image = pil_image.convert("RGB")
+
+    if output_path.suffix.lower() in {".jpg", ".jpeg"}:
+        pil_image.save(output_path, quality=95)
+    else:
+        pil_image.save(output_path)
+
+
+def export_first_annotation_images(
+    max_slice_thickness: float = 1.0,
+    limit: int = 3,
+    pad: int = 10,
+) -> list[dict[str, Any]]:
+    import csv
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    settings = get_settings()
+    ensure_data_folders(settings)
+    patch_pylidc_runtime_compatibility()
+
+    pl = require_pylidc()
+
+    scans = pl.query(pl.Scan).filter(pl.Scan.slice_thickness < max_slice_thickness)
+    scan_ids = [scan.id for scan in scans]
+    if not scan_ids:
+        raise RuntimeError(f"Nenhum scan encontrado com slice_thickness < {max_slice_thickness}.")
+
+    annotations = (
+        pl.query(pl.Annotation)
+        .filter(pl.Annotation.scan_id.in_(scan_ids))
+        .order_by(pl.Annotation.id)
+        .limit(limit)
+        .all()
+    )
+    if not annotations:
+        raise RuntimeError("Nenhuma anotacao encontrada para os scans filtrados.")
+
+    export_dir = settings.output_dir / "first_annotations"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict[str, Any]] = []
+    volume_cache: dict[int, Any] = {}
+
+    for index, ann in enumerate(annotations, start=1):
+        scan = ann.scan
+        if scan.id not in volume_cache:
+            volume_cache[scan.id] = scan.to_volume(verbose=False)
+
+        volume = volume_cache[scan.id]
+        bbox = ann.bbox(pad=pad)
+        crop = volume[bbox]
+        z_index = crop.shape[2] // 2
+
+        image_path = export_dir / (
+            f"{index:02d}_ann_{ann.id}_scan_{scan.patient_id}_"
+            f"malignancy_{ann.malignancy}.png"
+        )
+
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.imshow(crop[:, :, z_index], cmap="gray")
+        ax.set_title(f"{scan.patient_id} | ann {ann.id} | {ann.Malignancy}")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(image_path, dpi=150)
+        plt.close(fig)
+
+        rows.append(
+            {
+                "index": index,
+                "annotation_id": ann.id,
+                "scan_id": scan.id,
+                "patient_id": scan.patient_id,
+                "slice_thickness": scan.slice_thickness,
+                "malignancy": ann.malignancy,
+                "malignancy_label": ann.Malignancy,
+                "image_path": str(image_path),
+            }
+        )
+
+    csv_path = export_dir / "first_annotations_malignancy.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return rows
+
+
+def export_consensus_annotation_images(
+    min_annotations: int = 3,
+    limit: int = 3,
+    patient_id: str | None = None,
+    pad: int = 10,
+    image_format: str = "png",
+    export_scope: str = "slice",
+    window_center: float | None = -600.0,
+    window_width: float | None = 1500.0,
+    color_mode: str = "grayscale",
+) -> list[dict[str, Any]]:
+    import csv
+
+    settings = get_settings()
+    ensure_data_folders(settings)
+    patch_pylidc_runtime_compatibility()
+
+    if image_format.lower() not in {"png", "jpg", "jpeg"}:
+        raise ValueError("image_format deve ser png, jpg ou jpeg.")
+    if export_scope not in {"slice", "crop"}:
+        raise ValueError("export_scope deve ser slice ou crop.")
+    if color_mode not in {"grayscale", "rgb"}:
+        raise ValueError("color_mode deve ser grayscale ou rgb.")
+
+    extension = "jpg" if image_format.lower() == "jpeg" else image_format.lower()
+
+    pl = require_pylidc()
+    query = pl.query(pl.Scan).order_by(pl.Scan.id)
+    if patient_id:
+        query = query.filter(pl.Scan.patient_id == patient_id)
+
+    export_dir = settings.output_dir / f"consensus_min_{min_annotations}"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict[str, Any]] = []
+
+    for scan in query:
+        clusters = scan.cluster_annotations(verbose=False)
+        kept_clusters = [
+            (cluster_index, cluster)
+            for cluster_index, cluster in enumerate(clusters, start=1)
+            if len(cluster) >= min_annotations
+        ]
+
+        if not kept_clusters:
+            continue
+
+        volume = scan.to_volume(verbose=False)
+
+        for cluster_index, cluster in kept_clusters:
+            representative = cluster[0]
+            bbox = representative.bbox(pad=pad)
+            z_slice = bbox[2]
+            z_index = int((z_slice.start + z_slice.stop - 1) / 2)
+
+            if export_scope == "crop":
+                image = volume[bbox][:, :, volume[bbox].shape[2] // 2]
+            else:
+                image = volume[:, :, z_index]
+
+            malignancy_values = [ann.malignancy for ann in cluster]
+            malignancy_labels = [ann.Malignancy for ann in cluster]
+            annotation_ids = [ann.id for ann in cluster]
+
+            image_path = export_dir / (
+                f"{len(rows) + 1:03d}_{scan.patient_id}_cluster_{cluster_index}_"
+                f"anns_{len(cluster)}.{extension}"
+            )
+
+            save_raw_grayscale_image(
+                image,
+                image_path,
+                window_center=window_center,
+                window_width=window_width,
+                color_mode=color_mode,
+            )
+
+            rows.append(
+                {
+                    "index": len(rows) + 1,
+                    "patient_id": scan.patient_id,
+                    "scan_id": scan.id,
+                    "cluster_index": cluster_index,
+                    "annotation_count": len(cluster),
+                    "annotation_ids": ";".join(str(value) for value in annotation_ids),
+                    "malignancy_values": ";".join(str(value) for value in malignancy_values),
+                    "malignancy_labels": ";".join(malignancy_labels),
+                    "representative_annotation_id": representative.id,
+                    "slice_index": z_index,
+                    "export_scope": export_scope,
+                    "image_format": extension,
+                    "window_center": window_center,
+                    "window_width": window_width,
+                    "color_mode": color_mode,
+                    "image_path": str(image_path),
+                }
+            )
+
+            if limit > 0 and len(rows) >= limit:
+                break
+
+        if limit > 0 and len(rows) >= limit:
+            break
+
+    if not rows:
+        raise RuntimeError(
+            f"Nenhum cluster encontrado com pelo menos {min_annotations} anotacoes."
+        )
+
+    csv_path = export_dir / "consensus_annotations.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return rows
