@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,8 +64,23 @@ def get_settings() -> PylidcSettings:
     return PylidcSettings(
         dicom_path=resolve_project_path(raw_dicom_path),
         output_dir=resolve_project_path(raw_output_dir),
-        config_file=Path.home() / "pylidc.conf",
+        config_file=Path.home() / get_pylidc_config_filename(),
     )
+
+
+def get_pylidc_config_filename() -> str:
+    return "pylidc.conf" if sys.platform.startswith("win") else ".pylidcrc"
+
+
+def get_install_command() -> str:
+    python_bin = "venv\\Scripts\\python.exe" if os.name == "nt" else "venv/bin/python"
+    return f"{python_bin} -m pip install -r requirements.txt"
+
+
+def get_run_command(*args: str) -> str:
+    python_bin = "venv\\Scripts\\python.exe" if os.name == "nt" else "venv/bin/python"
+    suffix = " ".join(args)
+    return f"{python_bin} src/main.py {suffix}".rstrip()
 
 
 def ensure_data_folders(settings: PylidcSettings | None = None) -> None:
@@ -81,7 +97,7 @@ def build_pylidc_config(settings: PylidcSettings | None = None) -> str:
 def write_project_config_example(settings: PylidcSettings | None = None) -> Path:
     settings = settings or get_settings()
     ensure_data_folders(settings)
-    example_path = DATA_DIR / "pylidc.conf.example"
+    example_path = DATA_DIR / f"{get_pylidc_config_filename()}.example"
     example_path.write_text(build_pylidc_config(settings), encoding="utf-8")
     return example_path
 
@@ -104,7 +120,7 @@ def require_pylidc() -> Any:
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "A biblioteca pylidc nao esta instalada neste ambiente. "
-            "Instale com: venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+            f"Instale com: {get_install_command()}"
         ) from exc
 
     return pl

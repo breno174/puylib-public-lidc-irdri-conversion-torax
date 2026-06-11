@@ -6,6 +6,7 @@ from utils import (
     build_pylidc_config,
     ensure_data_folders,
     export_middle_slice,
+    get_run_command,
     get_settings,
     list_scans,
     write_home_pylidc_config,
@@ -34,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--write-config",
         action="store_true",
-        help="Cria o pylidc.conf no diretorio do usuario apontando para src/data/LIDC-IDRI.",
+        help="Cria a config do pylidc no diretorio do usuario apontando para src/data/LIDC-IDRI.",
     )
     return parser.parse_args()
 
@@ -54,7 +55,7 @@ def main() -> None:
         print(f"Config do pylidc gravada em: {config_file}")
     elif not settings.config_file.exists():
         print("\nAntes de exportar imagens, crie a config do pylidc com:")
-        print("venv\\Scripts\\python.exe src\\main.py --write-config")
+        print(get_run_command("--write-config"))
         print("\nConteudo esperado:")
         print(build_pylidc_config(settings))
 
